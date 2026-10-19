@@ -26,26 +26,27 @@ class Thinking(Markdown):
         super().__init__("", classes="reasoning")
         self._text = ""
         self.collapsed = False
-        self._word = "enviado"
+        self._word = "enviando"
         self._frame = 0
-        self._spinning = False
         self._timer = None
         self._update_title()
 
+    def _on_mount(self, event: events.Mount) -> None:
+        self._timer = self.set_interval(0.1, self._spin)
+
     def set_text(self, text: str) -> None:
-        if text and self._timer is None:
-            self._spinning = True
+        if text and self._word == "enviando":
             self._word = "pensando"
-            self._timer = self.set_interval(0.1, self._spin)
+            self._update_title()
         self._text = text
         self._show()
 
     def stop_spinner(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
-        self._spinning = False
-        self._word = "razonado" if self._text else "enviado"
+        if self._text:
+            if self._timer is not None:
+                self._timer.stop()
+                self._timer = None
+            self._word = "razonado"
         self._update_title()
 
     def toggle(self) -> None:
@@ -58,7 +59,10 @@ class Thinking(Markdown):
         self._update_title()
 
     def _update_title(self) -> None:
-        prefix = self.SPIN_FRAMES[self._frame % len(self.SPIN_FRAMES)] if self._spinning else "✻"
+        if self._word == "razonado":
+            prefix = "✻"
+        else:
+            prefix = self.SPIN_FRAMES[self._frame % len(self.SPIN_FRAMES)]
         suffix = "›" if self.collapsed else "▾"
         self.border_title = f"{prefix} {self._word} {suffix}"
 
