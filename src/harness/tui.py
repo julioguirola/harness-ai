@@ -5,11 +5,14 @@ from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.theme import Theme
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Input, Markdown, OptionList, Static
+from textual.widgets.option_list import Option
 
-from .core import MODEL, stream_chat
+from . import core
 
 BLUE = "#5b9dff"
+
+PROMPT_PLACEHOLDER = "Escribe un mensaje y pulsa Enter"
 
 
 class Chat(VerticalScroll):
@@ -25,7 +28,7 @@ class Thinking(Markdown):
     def __init__(self) -> None:
         super().__init__("", classes="reasoning")
         self._text = ""
-        self.collapsed = False
+        self.collapsed = True
         self._word = "enviando"
         self._frame = 0
         self._timer = None
@@ -70,7 +73,11 @@ class Thinking(Markdown):
         self.update("" if self.collapsed else self._text)
 
     def _on_click(self, event: events.Click) -> None:
-        if event.style is not None and event.style.meta and event.style.meta.get("@click"):
+        if (
+            event.style is not None
+            and event.style.meta
+            and event.style.meta.get("@click")
+        ):
             return
         self.toggle()
         event.stop()
@@ -99,8 +106,52 @@ def model_line(text: str) -> Text:
     return line
 
 
+def command_line(value: str, description: str) -> Text:
+    line = Text()
+    line.append(value, style=f"bold {BLUE}")
+    if description:
+        line.append(f"  {description}", style="dim")
+    return line
+
+
+class CommandMenu(OptionList):
+    """Menú de opciones sobre el prompt: comandos (`/`) o modelos."""
+
+    mode: str | None = None
+
+
+class Prompt(Input):
+    """Input del chat; con el menú abierto, las flechas y Enter lo navegan."""
+
+    async def _on_key(self, event: events.Key) -> None:
+        menu = self.app.query_one("#commands", CommandMenu)
+        handled = False
+
+        if menu.display and event.key == "down":
+            menu.action_cursor_down()
+            handled = True
+        elif menu.display and event.key == "up":
+            menu.action_cursor_up()
+            handled = True
+        elif menu.display and menu.mode == "commands" and event.key == "tab":
+            self.app.complete_command()
+            handled = True
+        elif event.key == "escape" and (menu.display or menu.mode == "models"):
+            self.app.close_menu()
+            handled = True
+
+        if handled:
+            event.stop()
+            event.prevent_default()
+        else:
+            await super()._on_key(event)
+
+
 class HarnessApp(App):
     ALLOW_SELECT = False
+
+    # True mientras se envía, piensa y responde: se puede escribir, no enviar.
+    _busy: bool = False
 
     BINDINGS = [
         ("ctrl+q", "quit", "Salir"),
@@ -142,14 +193,24 @@ class HarnessApp(App):
     #prompt {
         border: round $primary;
     }
+
+    #commands {
+        display: none;
+        margin: 0 1;
+        max-height: 6;
+        border: round $primary;
+    }
     """
 
     def compose(self) -> ComposeResult:
-        yield Static(model_line(MODEL), classes="aux", id="model")
+        yield Static(model_line(core.MODEL), classes="aux", id="model")
         yield Chat(id="chat")
-        yield Input(placeholder="Escribe un mensaje y pulsa Enter", id="prompt")
+        yield CommandMenu(id="commands")
+        yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
         yield Static(
-            "⏎ enviar · pgup/pgdn scroll · ctrl+q salir", classes="aux", id="hints"
+            "⏎ enviar · «/» comandos · pgup/pgdn scroll · ctrl+q salir",
+            classes="aux",
+            id="hints",
         )
 
     def on_mount(self) -> None:
@@ -159,12 +220,32 @@ class HarnessApp(App):
         self.query_one("#prompt", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._busy:
+            return
+
+        menu = self.query_one("#commands", CommandMenu)
         text = event.value.strip()
+
+        if menu.mode == "models":
+            # sigue el menú de modelos; el Enter elige el resaltado,
+            # incluso con el input vacío (lista sin filtrar)
+            event.input.value = ""
+            self._select_highlighted()
+            return
+
         if not text:
             return
 
+        if text.startswith("/"):
+            event.input.value = ""
+            if menu.display:
+                self._select_highlighted()
+            else:
+                self._unknown_command(text)
+            return
+
         event.input.value = ""
-        event.input.disabled = True
+        self._busy = True
 
         chat = self.query_one("#chat", Chat)
         reasoning = Thinking()
@@ -173,6 +254,98 @@ class HarnessApp(App):
         chat.anchor(True)
 
         self._ask_model(text, reasoning, answer)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        menu = self.query_one("#commands", CommandMenu)
+        text = event.value.strip()
+
+        if menu.mode == "models":
+            self._show_menu(
+                [(model, "") for model in core.MODELS if text.lower() in model.lower()]
+            )
+        elif text.startswith("/"):
+            self._show_menu(
+                [
+                    (name, description)
+                    for name, description in core.COMANDS.items()
+                    if name.startswith(text)
+                ]
+            )
+        else:
+            self.close_menu()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id != "commands" or event.option_id is None:
+            return
+        menu = self.query_one("#commands", CommandMenu)
+        if menu.mode == "models":
+            self._apply_model(event.option_id)
+        else:
+            self._run_command(event.option_id)
+
+    def _show_menu(self, items: list[tuple[str, str]]) -> None:
+        menu = self.query_one("#commands", CommandMenu)
+        menu.clear_options()
+        for value, description in items:
+            menu.add_option(Option(command_line(value, description), id=value))
+        menu.highlighted = 0 if items else None
+        menu.display = bool(items)
+
+    def close_menu(self) -> None:
+        menu = self.query_one("#commands", CommandMenu)
+        if not menu.display and menu.mode is None:
+            return
+        menu.mode = None
+        menu.display = False
+        prompt = self.query_one("#prompt", Prompt)
+        prompt.placeholder = PROMPT_PLACEHOLDER
+        if not prompt.has_focus:
+            prompt.focus()
+
+    def complete_command(self) -> None:
+        menu = self.query_one("#commands", CommandMenu)
+        if menu.highlighted is None:
+            return
+        value = menu.get_option_at_index(menu.highlighted).id
+        if value:
+            self.query_one("#prompt", Prompt).value = value
+
+    def _select_highlighted(self) -> None:
+        menu = self.query_one("#commands", CommandMenu)
+        if menu.highlighted is None:
+            return
+        value = menu.get_option_at_index(menu.highlighted).id
+        if value is None:
+            return
+        if menu.mode == "models":
+            self._apply_model(value)
+        else:
+            self._run_command(value)
+
+    def _run_command(self, name: str) -> None:
+        if name == "/model":
+            menu = self.query_one("#commands", CommandMenu)
+            menu.mode = "models"
+            prompt = self.query_one("#prompt", Prompt)
+            prompt.placeholder = "Elige un modelo y pulsa Enter"
+            prompt.value = ""
+            prompt.focus()
+            self._show_menu([(model, "") for model in core.MODELS])
+        elif name == "/exit":
+            self.exit()
+
+    def _apply_model(self, model: str) -> None:
+        core.select_model(model)
+        self.query_one("#model", Static).update(model_line(core.MODEL))
+        self.close_menu()
+
+    def _unknown_command(self, text: str) -> None:
+        chat = self.query_one("#chat", Chat)
+        line = Text()
+        line.append("✗ ", style="bold red")
+        line.append(f"comando desconocido: {text} (pulsa / para ver los disponibles)")
+        chat.mount(Static(line, classes="user"))
+        chat.anchor(True)
 
     @work(thread=True)
     def _ask_model(self, text: str, reasoning: Thinking, answer: Markdown) -> None:
@@ -189,7 +362,7 @@ class HarnessApp(App):
                 self.call_from_thread(answer.update, answer_text)
 
         try:
-            for kind, chunk in stream_chat(text):
+            for kind, chunk in core.stream_chat(text):
                 if kind == "reasoning":
                     reasoning_text += chunk
                 else:
@@ -216,8 +389,8 @@ class HarnessApp(App):
         reasoning.stop_spinner()
         if not reasoning._text:
             reasoning.remove()
+        self._busy = False
         prompt = self.query_one("#prompt", Input)
-        prompt.disabled = False
         prompt.focus()
 
 

@@ -8,7 +8,24 @@ client = OpenAI(
     api_key=os.environ["NVIDIA_API_KEY"],
 )
 
+MODELS = [
+    "deepseek-ai/deepseek-v4.1-flash",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "z-ai/glm-5.3-flash",
+]
+
 MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
+
+
+COMANDS = {
+    "/model": "cambiar el modelo de la conversación",
+    "/exit": "salir de la aplicación",
+}
+
+
+def select_model(model: str):
+    global MODEL
+    MODEL = model
 
 conversation: list[dict[str, str]] = []
 
