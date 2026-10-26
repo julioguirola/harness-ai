@@ -6,9 +6,11 @@ readme = "README.md"
 authors = [
     { name = "julioguirola", email = "julioguirola03@gmail.com" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "openai>=3.33.0",
+    "pydantic>=2.14.1",
+    "requests>=2.34.2",
     "textual>=8.2.8",
 ]
 

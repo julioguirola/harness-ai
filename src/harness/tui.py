@@ -203,7 +203,7 @@ class HarnessApp(App):
     """
 
     def compose(self) -> ComposeResult:
-        yield Static(model_line(core.MODEL), classes="aux", id="model")
+        yield Static(model_line(core.MODEL.name), classes="aux", id="model")
         yield Chat(id="chat")
         yield CommandMenu(id="commands")
         yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
@@ -261,7 +261,11 @@ class HarnessApp(App):
 
         if menu.mode == "models":
             self._show_menu(
-                [(model, "") for model in core.MODELS if text.lower() in model.lower()]
+                [
+                    (model_id, model.name)
+                    for model_id, model in core.MODELS.items()
+                    if text.lower() in model.name.lower()
+                ]
             )
         elif text.startswith("/"):
             self._show_menu(
@@ -330,13 +334,14 @@ class HarnessApp(App):
             prompt.placeholder = "Elige un modelo y pulsa Enter"
             prompt.value = ""
             prompt.focus()
-            self._show_menu([(model, "") for model in core.MODELS])
+            self._show_menu([(model_id, model.name) for model_id, model in core.MODELS.items()])
         elif name == "/exit":
             self.exit()
 
-    def _apply_model(self, model: str) -> None:
+    def _apply_model(self, model_id: str) -> None:
+        model = core.MODELS[model_id]
         core.select_model(model)
-        self.query_one("#model", Static).update(model_line(core.MODEL))
+        self.query_one("#model", Static).update(model_line(core.MODEL.name))
         self.close_menu()
 
     def _unknown_command(self, text: str) -> None:

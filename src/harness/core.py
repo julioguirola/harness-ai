@@ -1,20 +1,65 @@
+import json
 import os
 from collections.abc import Iterator
 
+import requests
 from openai import OpenAI
+from pydantic import BaseModel
+
+
+class ReasoningOption(BaseModel):
+    type: str
+    values: list[str] | None = None
+
+
+class Limit(BaseModel):
+    context: int
+    output: int
+
+
+class AIModel(BaseModel):
+    id: str
+    name: str
+    reasoning: bool
+    reasoning_options: list[ReasoningOption] | None = None
+    tool_call: bool
+    limit: Limit
+    temperature: bool
+
+
+class Provider(BaseModel):
+    models: dict[str, AIModel]
+
+
+MODELS: dict[str, AIModel] = {}
+
+
+def fetch_provider(provider: str):
+    global MODELS
+    with open("models.json", "r", encoding="utf-8") as file:
+        try:
+            cached = Provider.model_validate_json(file.read())
+            if len(cached.models) > 0:
+                MODELS = provider_fetched.models
+                return
+        except:
+            pass
+
+    res = requests.get("https://models.dev/api.json")
+    with open("models.json", "w", encoding="utf-8") as file:
+        file.write(json.dumps(res.json()[provider], indent=4))
+    provider_fetched = Provider.model_validate(res.json()[provider])
+    MODELS = provider_fetched.models
+
+
+fetch_provider("nvidia")
 
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key=os.environ["NVIDIA_API_KEY"],
 )
 
-MODELS = [
-    "deepseek-ai/deepseek-v4.1-flash",
-    "nvidia/nemotron-3.5-lightning-30b-a3b",
-    "z-ai/glm-5.3-flash",
-]
-
-MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
+MODEL: AIModel = MODELS[next(iter(MODELS))]
 
 
 COMANDS = {
@@ -23,9 +68,10 @@ COMANDS = {
 }
 
 
-def select_model(model: str):
+def select_model(model: AIModel):
     global MODEL
     MODEL = model
+
 
 conversation: list[dict[str, str]] = []
 
@@ -34,7 +80,7 @@ def stream_chat(user_content: str) -> Iterator[tuple[str, str]]:
     conversation.append({"role": "user", "content": user_content})
 
     completion = client.chat.completions.create(
-        model=MODEL,
+        model=MODEL.id,
         messages=conversation,
         temperature=1,
         extra_body={"chat_template_kwargs": {"enable_thinking": True}},
