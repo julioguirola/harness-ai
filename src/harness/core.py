@@ -77,6 +77,7 @@ conversation: list[dict[str, str]] = []
 
 
 def stream_chat(user_content: str) -> Iterator[tuple[str, str]]:
+    print(f"Llamando al modelo {MODEL.id} con context={MODEL.limit.context}")
     conversation.append({"role": "user", "content": user_content})
 
     completion = client.chat.completions.create(

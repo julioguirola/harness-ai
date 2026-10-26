@@ -1,11 +1,12 @@
+import os
 from time import monotonic
 
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.theme import Theme
-from textual.widgets import Input, Markdown, OptionList, Static
+from textual.widgets import Input, Log, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 
 from . import core
@@ -14,12 +15,24 @@ BLUE = "#5b9dff"
 
 PROMPT_PLACEHOLDER = "Escribe un mensaje y pulsa Enter"
 
+DEBUG = os.environ.get("DEBUG") == "1"
+
 
 class Chat(VerticalScroll):
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         super()._on_mouse_scroll_down(event)
         if self.scroll_y >= self.max_scroll_y:
             self.anchor(True)
+
+
+class DebugLog(Log):
+    """Panel que captura las salidas de `print` cuando DEBUG=1."""
+
+    def __init__(self) -> None:
+        super().__init__(auto_scroll=True, max_lines=1000, id="debug-log")
+
+    def on_print(self, event: events.Print) -> None:
+        self.write_line(event.text)
 
 
 class Thinking(Markdown):
@@ -169,6 +182,10 @@ class HarnessApp(App):
         color: $text-muted;
     }
 
+    #split {
+        height: 1fr;
+    }
+
     #chat {
         height: 1fr;
         padding: 0 1;
@@ -176,6 +193,14 @@ class HarnessApp(App):
 
     #chat > * {
         margin-bottom: 1;
+    }
+
+    #debug-log {
+        height: 1fr;
+        border: round $primary;
+        padding: 0 1;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
 
     .user {
@@ -204,20 +229,27 @@ class HarnessApp(App):
 
     def compose(self) -> ComposeResult:
         yield Static(model_line(core.MODEL.name), classes="aux", id="model")
-        yield Chat(id="chat")
-        yield CommandMenu(id="commands")
-        yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
-        yield Static(
-            "⏎ enviar · «/» comandos · pgup/pgdn scroll · ctrl+q salir",
-            classes="aux",
-            id="hints",
-        )
+        with Vertical(id="split"):
+            yield Chat(id="chat")
+            yield CommandMenu(id="commands")
+            yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
+            yield Static(
+                "⏎ enviar · «/» comandos · pgup/pgdn scroll · ctrl+q salir",
+                classes="aux",
+                id="hints",
+            )
+        if DEBUG:
+            yield DebugLog()
 
     def on_mount(self) -> None:
         self.register_theme(THEME)
         self.theme = THEME.name
         self.query_one("#chat", Chat).anchor(True)
         self.query_one("#prompt", Input).focus()
+        if DEBUG:
+            log = self.query_one("#debug-log", DebugLog)
+            log.border_title = "debug"
+            log.begin_capture_print(stdout=True)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if self._busy:
