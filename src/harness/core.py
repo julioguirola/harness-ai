@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from collections.abc import Iterator
 
 import requests
@@ -32,6 +33,22 @@ class Provider(BaseModel):
 
 
 MODELS: dict[str, AIModel] = {}
+
+# Llamada de streaming en curso, para poder cancelarla desde la TUI al salir.
+_active_completion = None
+_active_completion_lock = threading.Lock()
+
+
+def cancel_active_stream() -> None:
+    """Cierra la llamada al streaming en curso, si la hay."""
+    global _active_completion
+    with _active_completion_lock:
+        completion = _active_completion
+    if completion is not None:
+        try:
+            completion.close()
+        except Exception:
+            pass
 
 
 def fetch_provider(provider: str):
@@ -76,7 +93,8 @@ def select_model(model: AIModel):
 conversation: list[dict[str, str]] = []
 
 
-def stream_chat(user_content: str) -> Iterator[tuple[str, str]]:
+def stream_chat(user_content: str, cancel_event: threading.Event | None = None) -> Iterator[tuple[str, str]]:
+    global _active_completion
     print(f"Llamando al modelo {MODEL.id} con context={MODEL.limit.context}")
     conversation.append({"role": "user", "content": user_content})
 
@@ -90,18 +108,36 @@ def stream_chat(user_content: str) -> Iterator[tuple[str, str]]:
         max_completion_tokens=MODEL.limit.context,
     )
 
+    with _active_completion_lock:
+        _active_completion = completion
+
     answer = ""
-    for chunk in completion:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
+    cancelled = False
+    try:
+        for chunk in completion:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
 
-        reasoning = getattr(delta, "reasoning_content", None)
-        if reasoning:
-            yield "reasoning", reasoning
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield "reasoning", reasoning
 
-        if delta.content:
-            answer += delta.content
-            yield "content", delta.content
+            if delta.content:
+                answer += delta.content
+                yield "content", delta.content
+    finally:
+        with _active_completion_lock:
+            if _active_completion is completion:
+                _active_completion = None
 
-    conversation.append({"role": "assistant", "content": answer})
+        if not cancelled:
+            conversation.append({"role": "assistant", "content": answer})
+
+        try:
+            completion.close()
+        except Exception:
+            pass

@@ -1,4 +1,7 @@
 import os
+import shutil
+import subprocess
+import threading
 from time import monotonic
 
 from rich.text import Text
@@ -35,7 +38,17 @@ class DebugLog(Log):
         self.write_line(event.text)
 
 
-class Thinking(Markdown):
+class SelectableStatic(Static):
+    """Static que permite seleccionar su texto con el ratón."""
+    ALLOW_SELECT = True
+
+
+class SelectableMarkdown(Markdown):
+    """Markdown que permite seleccionar su texto con el ratón."""
+    ALLOW_SELECT = True
+
+
+class Thinking(SelectableMarkdown):
     SPIN_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
     def __init__(self) -> None:
@@ -161,13 +174,18 @@ class Prompt(Input):
 
 
 class HarnessApp(App):
-    ALLOW_SELECT = False
+    ALLOW_SELECT = True
 
-    # True mientras se envía, piensa y responde: se puede escribir, no enviar.
+    # True mientras se envía, piensa y responde: se puede escribir, no enviar,
+    # pero sí se pueden elegir otro modelo o salir.
     _busy: bool = False
+
+    # Evento para cancelar la llamada al modelo en curso (si la hay).
+    _cancel_event: threading.Event | None = None
 
     BINDINGS = [
         ("ctrl+q", "quit", "Salir"),
+        ("ctrl+p", "command_palette", "Comandos"),
         ("pageup", "chat_pageup", "Subir"),
         ("pagedown", "chat_pagedown", "Bajar"),
     ]
@@ -228,13 +246,13 @@ class HarnessApp(App):
     """
 
     def compose(self) -> ComposeResult:
-        yield Static(model_line(core.MODEL.name), classes="aux", id="model")
+        yield SelectableStatic(model_line(core.MODEL.name), classes="aux", id="model")
         with Vertical(id="split"):
             yield Chat(id="chat")
             yield CommandMenu(id="commands")
             yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
-            yield Static(
-                "⏎ enviar · «/» comandos · pgup/pgdn scroll · ctrl+q salir",
+            yield SelectableStatic(
+                "⏎ enviar · «/» o ctrl+p comandos · pgup/pgdn scroll · ctrl+q salir",
                 classes="aux",
                 id="hints",
             )
@@ -244,6 +262,8 @@ class HarnessApp(App):
     def on_mount(self) -> None:
         self.register_theme(THEME)
         self.theme = THEME.name
+        # Permitir selección de texto en la pantalla
+        self.screen.ALLOW_SELECT = True
         self.query_one("#chat", Chat).anchor(True)
         self.query_one("#prompt", Input).focus()
         if DEBUG:
@@ -252,15 +272,19 @@ class HarnessApp(App):
             log.begin_capture_print(stdout=True)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self._busy:
-            return
-
         menu = self.query_one("#commands", CommandMenu)
         text = event.value.strip()
 
         if menu.mode == "models":
             # sigue el menú de modelos; el Enter elige el resaltado,
             # incluso con el input vacío (lista sin filtrar)
+            event.input.value = ""
+            self._select_highlighted()
+            return
+
+        if menu.display and menu.mode == "commands":
+            # Menú abierto con ctrl+p (sin "/" en el input):
+            # elegir la opción resaltada.
             event.input.value = ""
             self._select_highlighted()
             return
@@ -276,13 +300,18 @@ class HarnessApp(App):
                 self._unknown_command(text)
             return
 
+        # Mientras el modelo piensa o responde no se acepta un nuevo mensaje,
+        # pero los comandos (/model, /exit) sí se siguen procesando arriba.
+        if self._busy:
+            return
+
         event.input.value = ""
         self._busy = True
 
         chat = self.query_one("#chat", Chat)
         reasoning = Thinking()
-        answer = Markdown("", classes="answer")
-        chat.mount(Static(user_line(text), classes="user"), reasoning, answer)
+        answer = SelectableMarkdown("", classes="answer")
+        chat.mount(SelectableStatic(user_line(text), classes="user"), reasoning, answer)
         chat.anchor(True)
 
         self._ask_model(text, reasoning, answer)
@@ -368,6 +397,7 @@ class HarnessApp(App):
             prompt.focus()
             self._show_menu([(model_id, model.name) for model_id, model in core.MODELS.items()])
         elif name == "/exit":
+            self._cancel_stream()
             self.exit()
 
     def _apply_model(self, model_id: str) -> None:
@@ -381,11 +411,13 @@ class HarnessApp(App):
         line = Text()
         line.append("✗ ", style="bold red")
         line.append(f"comando desconocido: {text} (pulsa / para ver los disponibles)")
-        chat.mount(Static(line, classes="user"))
+        chat.mount(SelectableStatic(line, classes="user"))
         chat.anchor(True)
 
     @work(thread=True)
     def _ask_model(self, text: str, reasoning: Thinking, answer: Markdown) -> None:
+        cancel_event = threading.Event()
+        self._cancel_event = cancel_event
         reasoning_text = ""
         answer_text = ""
         last_flush = 0.0
@@ -399,7 +431,7 @@ class HarnessApp(App):
                 self.call_from_thread(answer.update, answer_text)
 
         try:
-            for kind, chunk in core.stream_chat(text):
+            for kind, chunk in core.stream_chat(text, cancel_event):
                 if kind == "reasoning":
                     reasoning_text += chunk
                 else:
@@ -412,6 +444,67 @@ class HarnessApp(App):
         finally:
             flush(force=True)
             self.call_from_thread(self._finish_stream, reasoning)
+            self._cancel_event = None
+
+    def _cancel_stream(self) -> None:
+        """Cancela la llamada al modelo en curso, si la hay."""
+        event = self._cancel_event
+        if event is not None:
+            event.set()
+            self._cancel_event = None
+        core.cancel_active_stream()
+
+    def action_quit(self) -> None:
+        self._cancel_stream()
+        self.exit()
+
+    def action_command_palette(self) -> None:
+        """Abre el menú de comandos como si se hubiera escrito "/",
+        sin modificar el contenido del prompt."""
+        menu = self.query_one("#commands", CommandMenu)
+        menu.mode = "commands"
+        self._show_menu(
+            [
+                (name, description)
+                for name, description in core.COMANDS.items()
+            ]
+        )
+        prompt = self.query_one("#prompt", Prompt)
+        prompt.focus()
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Copia texto al portapapeles del sistema.
+
+        Usa xclip/wl-copy cuando estén disponibles (más fiable que OSC 52),
+        con fallback a la secuencia de escape de Textual.
+        """
+        clipboard_cmd = shutil.which("wl-copy") or shutil.which("xclip")
+        if clipboard_cmd:
+            try:
+                subprocess.run(
+                    [clipboard_cmd, "-selection", "clipboard"]
+                    if clipboard_cmd.endswith("xclip")
+                    else [clipboard_cmd],
+                    input=text,
+                    text=True,
+                    check=False,
+                    capture_output=True,
+                )
+                return
+            except Exception:
+                pass
+        # Fallback OSC 52: debe ejecutarse en el hilo principal de Textual.
+        self.call_from_thread(self.copy_to_clipboard, text)
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        """Copia al portapapeles el texto que el usuario selecciona con el ratón."""
+        text = self.screen.get_selected_text()
+        if text:
+            # Se ejecuta en un hilo aparte para no bloquear la UI de Textual.
+            threading.Thread(
+                target=self._copy_to_clipboard, args=(text,), daemon=True
+            ).start()
+        event.stop()
 
     def action_chat_pageup(self) -> None:
         self.query_one("#chat", Chat).scroll_page_up(animate=False)
