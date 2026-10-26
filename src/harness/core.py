@@ -82,9 +82,11 @@ def stream_chat(user_content: str) -> Iterator[tuple[str, str]]:
     completion = client.chat.completions.create(
         model=MODEL.id,
         messages=conversation,
-        temperature=1,
+        temperature=0.2,
         extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+        # reasoning_effort=
         stream=True,
+        max_completion_tokens=MODEL.limit.context,
     )
 
     answer = ""
