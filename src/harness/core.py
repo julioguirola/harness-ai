@@ -40,7 +40,7 @@ def fetch_provider(provider: str):
         try:
             cached = Provider.model_validate_json(file.read())
             if len(cached.models) > 0:
-                MODELS = provider_fetched.models
+                MODELS = cached.models
                 return
         except:
             pass
