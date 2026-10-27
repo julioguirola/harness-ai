@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 from collections.abc import Iterator
@@ -26,6 +25,7 @@ class AIModel(BaseModel):
     tool_call: bool
     limit: Limit
     temperature: bool
+    status: str | None = None
 
 
 class Provider(BaseModel):
@@ -63,10 +63,14 @@ def fetch_provider(provider: str):
             pass
 
     res = requests.get("https://models.dev/api.json")
-    with open("models.json", "w", encoding="utf-8") as file:
-        file.write(json.dumps(res.json()[provider], indent=4))
     provider_fetched = Provider.model_validate(res.json()[provider])
-    MODELS = provider_fetched.models
+    MODELS = {
+        id: model
+        for id, model in provider_fetched.models.items()
+        if model.reasoning and model.tool_call and model.status != "deprecated"
+    }
+    with open("models.json", "w", encoding="utf-8") as file:
+        file.write(Provider(models=MODELS).model_dump_json(indent=4))
 
 
 fetch_provider("nvidia")
