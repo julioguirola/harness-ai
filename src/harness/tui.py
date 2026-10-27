@@ -7,7 +7,7 @@ from time import monotonic
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.theme import Theme
 from textual.widgets import Input, Log, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
@@ -136,7 +136,7 @@ def model_line(text: str) -> Text:
 
 def effort_line(text: str) -> Text:
     line = Text()
-    line.append("⚙ ", style=f"bold {BLUE}")
+    line.append("⚙ ", style=f"bold yellow")
     line.append(text)
     return line
 
@@ -163,7 +163,11 @@ class CommandPalette(Vertical):
         self.border_title = "Comandos"
 
     def compose(self) -> ComposeResult:
-        yield PaletteFilter(placeholder="Filtrar comandos...", id="palette-filter", select_on_focus=False)
+        yield PaletteFilter(
+            placeholder="Filtrar comandos...",
+            id="palette-filter",
+            select_on_focus=False,
+        )
         yield OptionList(id="palette-options")
 
 
@@ -254,6 +258,33 @@ class HarnessApp(App):
         height: 1fr;
     }
 
+    #model-row {
+        height: auto;
+        width: 1fr;
+    }
+
+    #prompt-row {
+        height: auto;
+        width: 1fr;
+    }
+
+    #prompt-prefix {
+        width: auto;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+        color: $primary;
+        padding: 0 1 0 0;
+    }
+
+    #model {
+        width: auto;
+    }
+
+    #effort {
+        width: auto;
+    }
+
     #chat {
         height: 1fr;
         padding: 0 1;
@@ -265,7 +296,8 @@ class HarnessApp(App):
 
     #debug-log {
         height: 1fr;
-        border: round $primary;
+        border-top: round $primary;
+        border-bottom: round $primary;
         padding: 0 1;
         border-title-color: $primary;
         border-title-style: bold;
@@ -276,7 +308,8 @@ class HarnessApp(App):
     }
 
     .reasoning {
-        border: round $primary 20%;
+        border-top: round $primary 20%;
+        border-bottom: round $primary 20%;
         color: $text-muted;
         text-style: italic;
         border-title-color: $primary;
@@ -285,13 +318,16 @@ class HarnessApp(App):
 
     #prompt {
         border: round $primary;
+        border-left: none;
+        border-right: none;
     }
 
     #commands {
         display: none;
         margin: 0 1;
         max-height: 6;
-        border: round $primary;
+        border-top: round $primary;
+        border-bottom: round $primary;
     }
 
     #command-palette {
@@ -300,13 +336,16 @@ class HarnessApp(App):
         display: none;
         width: 60;
         height: auto;
-        border: round $primary;
+        border-top: round $primary;
+        border-bottom: round $primary;
         background: $surface;
         padding: 1 2;
     }
 
     #palette-filter {
         margin-bottom: 1;
+        border-left: none;
+        border-right: none;
     }
 
     #palette-options {
@@ -315,14 +354,23 @@ class HarnessApp(App):
     """
 
     def compose(self) -> ComposeResult:
-        yield SelectableStatic(model_line(core.MODEL.name), classes="aux", id="model")
-        yield SelectableStatic(
-            effort_line(core.get_current_effort_level()), classes="aux", id="effort"
-        )
         with Vertical(id="split"):
             yield Chat(id="chat")
             yield CommandMenu(id="commands")
-            yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt", select_on_focus=False)
+            with Horizontal(id="model-row"):
+                yield SelectableStatic(
+                    model_line(core.MODEL.name), classes="aux", id="model"
+                )
+                yield SelectableStatic(
+                    effort_line(core.get_current_effort_level()),
+                    classes="aux",
+                    id="effort",
+                )
+            with Horizontal(id="prompt-row"):
+                yield SelectableStatic("❯", classes="aux", id="prompt-prefix")
+                yield Prompt(
+                    placeholder=PROMPT_PLACEHOLDER, id="prompt", select_on_focus=False
+                )
             yield SelectableStatic(
                 "⏎ enviar · «/» o ctrl+p comandos · pgup/pgdn scroll · ctrl+t esfuerzo · ctrl+q salir",
                 classes="aux",
@@ -429,7 +477,10 @@ class HarnessApp(App):
             # Filtrar los niveles de esfuerzo según lo que escriba el usuario.
             self._show_menu(
                 [
-                    (level, "actual" if level == core.get_current_effort_level() else "")
+                    (
+                        level,
+                        "actual" if level == core.get_current_effort_level() else "",
+                    )
                     for level in core.get_available_model_effort_levels()
                     if text.lower() in level.lower()
                 ]
@@ -625,10 +676,7 @@ class HarnessApp(App):
         menu.mode = "effort"
         levels = core.get_available_model_effort_levels()
         current = core.get_current_effort_level()
-        items = [
-            (level, "actual" if level == current else "")
-            for level in levels
-        ]
+        items = [(level, "actual" if level == current else "") for level in levels]
         self._show_menu(items)
         prompt = self.query_one("#prompt", Prompt)
         prompt.placeholder = "Elige un nivel de esfuerzo y pulsa Enter"
