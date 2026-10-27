@@ -37,4 +37,5 @@ uv run --env-file .env harness
 |---|---|
 | `⏎` | Enviar mensaje |
 | `pgup` / `pgdn` | Scroll del chat |
+| `ctrl+t` | Rotar el effort level del modelo |
 | `ctrl+q` | Salir |

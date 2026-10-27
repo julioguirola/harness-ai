@@ -71,29 +71,81 @@ def fetch_provider(provider: str):
 
 fetch_provider("nvidia")
 
+
+class CommandResult:
+    def __init__(self, stdout: str, stderr: str, returncode: int):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+# def tool_exec_command(comand: list[str]) -> CommandResult:
+#     resultado = subprocess.run(comand, capture_output=True, text=True)
+#     comand_result = CommandResult(
+#         returncode=resultado.returncode,
+#         stdout=resultado.stdout,
+#         stderr=resultado.stderr,
+#     )
+#     return comand_result
+
+
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key=os.environ["NVIDIA_API_KEY"],
 )
 
 MODEL: AIModel = MODELS[next(iter(MODELS))]
-
+EFFORT = {"enable_thinking": False, "reasoning_effort": "none"}
 
 COMANDS = {
-    "/model": "cambiar el modelo de la conversación",
-    "/exit": "salir de la aplicación",
+    "/model": "Cambiar el modelo de la conversación",
+    "/exit": "Salir de la aplicación",
+    "/effort": "Seleccionar esfuerzo del modelo",
 }
 
 
-def select_model(model: AIModel):
+def set_model(model: AIModel):
     global MODEL
+    global EFFORT
     MODEL = model
+    EFFORT = {"enable_thinking": False, "reasoning_effort": "none"}
+
+
+def set_model_effort(effort: str):
+    global EFFORT
+    if effort == "none":
+        EFFORT = {"enable_thinking": False}
+    elif effort == "default":
+        EFFORT = {"enable_thinking": True}
+    else:
+        EFFORT = {"enable_thinking": True, "reasoning_effort": effort}
+
+
+def get_available_model_effort_levels() -> list[str]:
+    levels = ["none"]
+    if not MODEL.reasoning:
+        return levels
+    for type in MODEL.reasoning_options:
+        if type.type == "effort":
+            return type.values
+        else:
+            levels = ["none", "default"]
+    return levels
+
+
+def get_current_effort_level() -> str:
+    """Devuelve el nivel de esfuerzo actual: "none", "default" o el valor de reasoning_effort."""
+    if not EFFORT.get("enable_thinking"):
+        return "none"
+    return EFFORT.get("reasoning_effort", "default")
 
 
 conversation: list[dict[str, str]] = []
 
 
-def stream_chat(user_content: str, cancel_event: threading.Event | None = None) -> Iterator[tuple[str, str]]:
+def stream_chat(
+    user_content: str, cancel_event: threading.Event | None = None
+) -> Iterator[tuple[str, str]]:
     global _active_completion
     print(f"Llamando al modelo {MODEL.id} con context={MODEL.limit.context}")
     conversation.append({"role": "user", "content": user_content})
@@ -102,8 +154,7 @@ def stream_chat(user_content: str, cancel_event: threading.Event | None = None) 
         model=MODEL.id,
         messages=conversation,
         temperature=0.2,
-        extra_body={"chat_template_kwargs": {"enable_thinking": True}},
-        # reasoning_effort=
+        extra_body={"chat_template_kwargs": EFFORT},
         stream=True,
         max_completion_tokens=MODEL.limit.context,
     )

@@ -40,11 +40,13 @@ class DebugLog(Log):
 
 class SelectableStatic(Static):
     """Static que permite seleccionar su texto con el ratón."""
+
     ALLOW_SELECT = True
 
 
 class SelectableMarkdown(Markdown):
     """Markdown que permite seleccionar su texto con el ratón."""
+
     ALLOW_SELECT = True
 
 
@@ -132,6 +134,13 @@ def model_line(text: str) -> Text:
     return line
 
 
+def effort_line(text: str) -> Text:
+    line = Text()
+    line.append("⚙ ", style=f"bold {BLUE}")
+    line.append(text)
+    return line
+
+
 def command_line(value: str, description: str) -> Text:
     line = Text()
     line.append(value, style=f"bold {BLUE}")
@@ -186,6 +195,7 @@ class HarnessApp(App):
     BINDINGS = [
         ("ctrl+q", "quit", "Salir"),
         ("ctrl+p", "command_palette", "Comandos"),
+        ("ctrl+t", "toggle_effort", "Rotar esfuerzo"),
         ("pageup", "chat_pageup", "Subir"),
         ("pagedown", "chat_pagedown", "Bajar"),
     ]
@@ -247,12 +257,15 @@ class HarnessApp(App):
 
     def compose(self) -> ComposeResult:
         yield SelectableStatic(model_line(core.MODEL.name), classes="aux", id="model")
+        yield SelectableStatic(
+            effort_line(core.get_current_effort_level()), classes="aux", id="effort"
+        )
         with Vertical(id="split"):
             yield Chat(id="chat")
             yield CommandMenu(id="commands")
             yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
             yield SelectableStatic(
-                "⏎ enviar · «/» o ctrl+p comandos · pgup/pgdn scroll · ctrl+q salir",
+                "⏎ enviar · «/» o ctrl+p comandos · pgup/pgdn scroll · ctrl+t esfuerzo · ctrl+q salir",
                 classes="aux",
                 id="hints",
             )
@@ -282,9 +295,8 @@ class HarnessApp(App):
             self._select_highlighted()
             return
 
-        if menu.display and menu.mode == "commands":
-            # Menú abierto con ctrl+p (sin "/" en el input):
-            # elegir la opción resaltada.
+        if menu.display and menu.mode in ("commands", "effort"):
+            # Menú abierto (ctrl+p o /effort): elegir la opción resaltada.
             event.input.value = ""
             self._select_highlighted()
             return
@@ -328,6 +340,14 @@ class HarnessApp(App):
                     if text.lower() in model.name.lower()
                 ]
             )
+        elif menu.mode == "effort":
+            # Mantener abierto el menú de effort aunque se limpie el input.
+            self._show_menu(
+                [
+                    (level, "actual" if level == core.get_current_effort_level() else "")
+                    for level in core.get_available_model_effort_levels()
+                ]
+            )
         elif text.startswith("/"):
             self._show_menu(
                 [
@@ -345,6 +365,8 @@ class HarnessApp(App):
         menu = self.query_one("#commands", CommandMenu)
         if menu.mode == "models":
             self._apply_model(event.option_id)
+        elif menu.mode == "effort":
+            self._apply_effort(event.option_id)
         else:
             self._run_command(event.option_id)
 
@@ -384,6 +406,8 @@ class HarnessApp(App):
             return
         if menu.mode == "models":
             self._apply_model(value)
+        elif menu.mode == "effort":
+            self._apply_effort(value)
         else:
             self._run_command(value)
 
@@ -395,15 +419,58 @@ class HarnessApp(App):
             prompt.placeholder = "Elige un modelo y pulsa Enter"
             prompt.value = ""
             prompt.focus()
-            self._show_menu([(model_id, model.name) for model_id, model in core.MODELS.items()])
+            self._show_menu(
+                [(model_id, model.name) for model_id, model in core.MODELS.items()]
+            )
+        elif name == "/effort":
+            self._open_effort_menu()
         elif name == "/exit":
             self._cancel_stream()
             self.exit()
 
     def _apply_model(self, model_id: str) -> None:
         model = core.MODELS[model_id]
-        core.select_model(model)
+        core.set_model(model)
         self.query_one("#model", Static).update(model_line(core.MODEL.name))
+        self.close_menu()
+
+    def _refresh_effort_display(self) -> None:
+        self.query_one("#effort", Static).update(
+            effort_line(core.get_current_effort_level())
+        )
+
+    def action_toggle_effort(self) -> None:
+        """Rota al siguiente nivel de esfuerzo disponible para el modelo actual."""
+        levels = core.get_available_model_effort_levels()
+        if not levels:
+            return
+        current = core.get_current_effort_level()
+        try:
+            idx = levels.index(current)
+        except ValueError:
+            idx = -1
+        next_level = levels[(idx + 1) % len(levels)]
+        core.set_model_effort(next_level)
+        self._refresh_effort_display()
+
+    def _open_effort_menu(self) -> None:
+        menu = self.query_one("#commands", CommandMenu)
+        menu.mode = "effort"
+        levels = core.get_available_model_effort_levels()
+        current = core.get_current_effort_level()
+        items = [
+            (level, "actual" if level == current else "")
+            for level in levels
+        ]
+        self._show_menu(items)
+        prompt = self.query_one("#prompt", Prompt)
+        prompt.placeholder = "Elige un nivel de esfuerzo y pulsa Enter"
+        prompt.value = ""
+        prompt.focus()
+
+    def _apply_effort(self, level: str) -> None:
+        core.set_model_effort(level)
+        self._refresh_effort_display()
         self.close_menu()
 
     def _unknown_command(self, text: str) -> None:
@@ -464,10 +531,7 @@ class HarnessApp(App):
         menu = self.query_one("#commands", CommandMenu)
         menu.mode = "commands"
         self._show_menu(
-            [
-                (name, description)
-                for name, description in core.COMANDS.items()
-            ]
+            [(name, description) for name, description in core.COMANDS.items()]
         )
         prompt = self.query_one("#prompt", Prompt)
         prompt.focus()
