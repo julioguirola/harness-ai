@@ -155,6 +155,18 @@ class CommandMenu(OptionList):
     mode: str | None = None
 
 
+class CommandPalette(Vertical):
+    """Diálogo centrado con su propio input para filtrar comandos."""
+
+    def __init__(self) -> None:
+        super().__init__(id="command-palette")
+        self.border_title = "Comandos"
+
+    def compose(self) -> ComposeResult:
+        yield PaletteFilter(placeholder="Filtrar comandos...", id="palette-filter", select_on_focus=False)
+        yield OptionList(id="palette-options")
+
+
 class Prompt(Input):
     """Input del chat; con el menú abierto, las flechas y Enter lo navegan."""
 
@@ -182,12 +194,39 @@ class Prompt(Input):
             await super()._on_key(event)
 
 
+class PaletteFilter(Input):
+    """Input del CommandPalette; las flechas navegan las opciones del diálogo."""
+
+    async def _on_key(self, event: events.Key) -> None:
+        options = self.app.query_one("#palette-options", OptionList)
+        handled = False
+
+        if options.option_count > 0 and event.key == "down":
+            options.action_cursor_down()
+            handled = True
+        elif options.option_count > 0 and event.key == "up":
+            options.action_cursor_up()
+            handled = True
+        elif event.key == "escape":
+            self.app._close_palette()
+            handled = True
+
+        if handled:
+            event.stop()
+            event.prevent_default()
+        else:
+            await super()._on_key(event)
+
+
 class HarnessApp(App):
     ALLOW_SELECT = True
 
     # True mientras se envía, piensa y responde: se puede escribir, no enviar,
     # pero sí se pueden elegir otro modelo o salir.
     _busy: bool = False
+
+    # Modo actual del CommandPalette (ctrl+p): commands, models o effort.
+    _palette_mode: str = "commands"
 
     # Evento para cancelar la llamada al modelo en curso (si la hay).
     _cancel_event: threading.Event | None = None
@@ -203,6 +242,7 @@ class HarnessApp(App):
     CSS = """
     Screen {
         background: transparent;
+        layers: dialog;
     }
 
     .aux {
@@ -253,6 +293,25 @@ class HarnessApp(App):
         max-height: 6;
         border: round $primary;
     }
+
+    #command-palette {
+        layer: dialog;
+        position: absolute;
+        display: none;
+        width: 60;
+        height: auto;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #palette-filter {
+        margin-bottom: 1;
+    }
+
+    #palette-options {
+        max-height: 8;
+    }
     """
 
     def compose(self) -> ComposeResult:
@@ -263,12 +322,13 @@ class HarnessApp(App):
         with Vertical(id="split"):
             yield Chat(id="chat")
             yield CommandMenu(id="commands")
-            yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt")
+            yield Prompt(placeholder=PROMPT_PLACEHOLDER, id="prompt", select_on_focus=False)
             yield SelectableStatic(
                 "⏎ enviar · «/» o ctrl+p comandos · pgup/pgdn scroll · ctrl+t esfuerzo · ctrl+q salir",
                 classes="aux",
                 id="hints",
             )
+        yield CommandPalette()
         if DEBUG:
             yield DebugLog()
 
@@ -284,7 +344,26 @@ class HarnessApp(App):
             log.border_title = "debug"
             log.begin_capture_print(stdout=True)
 
+    def on_key(self, event: events.Key) -> None:
+        # Cerrar el CommandPalette con Escape.
+        palette = self.query_one("#command-palette", CommandPalette)
+        if palette.display and event.key == "escape":
+            self._close_palette()
+            event.stop()
+            event.prevent_default()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Enter en el filtro del CommandPalette: elegir la opción resaltada.
+        if event.input.id == "palette-filter":
+            options = self.query_one("#palette-options", OptionList)
+            if options.highlighted is not None and options.option_count > 0:
+                value = options.get_option_at_index(options.highlighted).id
+                if value is not None:
+                    self._palette_select(value)
+            else:
+                self._close_palette()
+            return
+
         menu = self.query_one("#commands", CommandMenu)
         text = event.value.strip()
 
@@ -329,6 +408,11 @@ class HarnessApp(App):
         self._ask_model(text, reasoning, answer)
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        # Input dedicado del CommandPalette (ctrl+p): filtrar comandos.
+        if event.input.id == "palette-filter":
+            self._filter_palette(event.value.strip())
+            return
+
         menu = self.query_one("#commands", CommandMenu)
         text = event.value.strip()
 
@@ -338,14 +422,16 @@ class HarnessApp(App):
                     (model_id, model.name)
                     for model_id, model in core.MODELS.items()
                     if text.lower() in model.name.lower()
+                    or text.lower() in model_id.lower()
                 ]
             )
         elif menu.mode == "effort":
-            # Mantener abierto el menú de effort aunque se limpie el input.
+            # Filtrar los niveles de esfuerzo según lo que escriba el usuario.
             self._show_menu(
                 [
                     (level, "actual" if level == core.get_current_effort_level() else "")
                     for level in core.get_available_model_effort_levels()
+                    if text.lower() in level.lower()
                 ]
             )
         elif text.startswith("/"):
@@ -360,6 +446,11 @@ class HarnessApp(App):
             self.close_menu()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        # Selección en el CommandPalette (ctrl+p).
+        if event.option_list.id == "palette-options":
+            if event.option_id is not None:
+                self._palette_select(event.option_id)
+            return
         if event.option_list.id != "commands" or event.option_id is None:
             return
         menu = self.query_one("#commands", CommandMenu)
@@ -389,6 +480,49 @@ class HarnessApp(App):
         if not prompt.has_focus:
             prompt.focus()
 
+    def _close_palette(self) -> None:
+        """Cierra el CommandPalette y devuelve el foco al prompt."""
+        palette = self.query_one("#command-palette", CommandPalette)
+        palette.display = False
+        self._palette_mode = "commands"
+        prompt = self.query_one("#prompt", Prompt)
+        if not prompt.has_focus:
+            prompt.focus(scroll_visible=False)
+        prompt.cursor_position = len(prompt.value)
+
+    def _filter_palette(self, text: str) -> None:
+        """Filtra las opciones mostradas en el CommandPalette según su modo."""
+        options = self.query_one("#palette-options", OptionList)
+        options.clear_options()
+        mode = self._palette_mode
+        if mode == "commands":
+            for name, description in core.COMANDS.items():
+                if text.lower() in name.lower():
+                    options.add_option(Option(command_line(name, description), id=name))
+        elif mode == "models":
+            for model_id, model in core.MODELS.items():
+                if (
+                    text.lower() in model.name.lower()
+                    or text.lower() in model_id.lower()
+                ):
+                    options.add_option(
+                        Option(command_line(model_id, model.name), id=model_id)
+                    )
+        elif mode == "effort":
+            current = core.get_current_effort_level()
+            for level in core.get_available_model_effort_levels():
+                if text.lower() in level.lower():
+                    options.add_option(
+                        Option(
+                            command_line(
+                                level,
+                                "actual" if level == current else "",
+                            ),
+                            id=level,
+                        )
+                    )
+        options.highlighted = 0 if options.option_count > 0 else None
+
     def complete_command(self) -> None:
         menu = self.query_one("#commands", CommandMenu)
         if menu.highlighted is None:
@@ -410,6 +544,39 @@ class HarnessApp(App):
             self._apply_effort(value)
         else:
             self._run_command(value)
+
+    def _palette_select(self, value: str) -> None:
+        """Ejecuta la opción seleccionada en el CommandPalette según su modo."""
+        if self._palette_mode == "commands":
+            if value == "/model":
+                self._palette_mode = "models"
+                filter_input = self.query_one("#palette-filter", PaletteFilter)
+                filter_input.value = ""
+                self._filter_palette("")
+                filter_input.focus()
+                return
+            if value == "/effort":
+                self._palette_mode = "effort"
+                filter_input = self.query_one("#palette-filter", PaletteFilter)
+                filter_input.value = ""
+                self._filter_palette("")
+                filter_input.focus()
+                return
+            if value == "/exit":
+                self._cancel_stream()
+                self.exit()
+                return
+            self._run_command(value)
+            self._close_palette()
+            return
+        if self._palette_mode == "models":
+            self._apply_model(value)
+            self._close_palette()
+            return
+        if self._palette_mode == "effort":
+            self._apply_effort(value)
+            self._close_palette()
+            return
 
     def _run_command(self, name: str) -> None:
         if name == "/model":
@@ -526,15 +693,20 @@ class HarnessApp(App):
         self.exit()
 
     def action_command_palette(self) -> None:
-        """Abre el menú de comandos como si se hubiera escrito "/",
-        sin modificar el contenido del prompt."""
-        menu = self.query_one("#commands", CommandMenu)
-        menu.mode = "commands"
-        self._show_menu(
-            [(name, description) for name, description in core.COMANDS.items()]
-        )
-        prompt = self.query_one("#prompt", Prompt)
-        prompt.focus()
+        """Abre el CommandPalette centrado con su propio input para filtrar."""
+        palette = self.query_one("#command-palette", CommandPalette)
+        palette.display = True
+        self._palette_mode = "commands"
+        # Centrar el diálogo en pantalla.
+        width = 60
+        height = 12
+        x = max(0, (self.size.width - width) // 2)
+        y = max(0, (self.size.height - height) // 2)
+        palette.styles.offset = (x, y)
+        filter_input = self.query_one("#palette-filter", PaletteFilter)
+        filter_input.value = ""
+        self._filter_palette("")
+        filter_input.focus(scroll_visible=False)
 
     def _copy_to_clipboard(self, text: str) -> None:
         """Copia texto al portapapeles del sistema.

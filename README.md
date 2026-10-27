@@ -37,5 +37,6 @@ uv run --env-file .env harness
 |---|---|
 | `⏎` | Enviar mensaje |
 | `pgup` / `pgdn` | Scroll del chat |
+| `ctrl+p` | Abrir el panel de comandos (filtra escribiendo) |
 | `ctrl+t` | Rotar el effort level del modelo |
 | `ctrl+q` | Salir |
