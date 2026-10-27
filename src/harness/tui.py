@@ -71,7 +71,14 @@ class Thinking(SelectableMarkdown):
             self.remove_class("sending")
             self._update_title()
         self._text = text
-        self._show()
+        # No renderizar el cuerpo mientras está colapsado: se monta al expandir.
+        if not self.collapsed:
+            self._show()
+        else:
+            # Al pasar de "enviando" a razonando, limpiar la marca gris
+            # residual del spinner en el cuerpo (si la hubiera).
+            if self._word != "enviando":
+                self.update("")
 
     def stop_spinner(self) -> None:
         if self._text:
