@@ -54,7 +54,7 @@ class Thinking(SelectableMarkdown):
     SPIN_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
     def __init__(self) -> None:
-        super().__init__("", classes="reasoning")
+        super().__init__("", classes="reasoning sending")
         self._text = ""
         self.collapsed = True
         self._word = "enviando"
@@ -68,6 +68,7 @@ class Thinking(SelectableMarkdown):
     def set_text(self, text: str) -> None:
         if text and self._word == "enviando":
             self._word = "pensando"
+            self.remove_class("sending")
             self._update_title()
         self._text = text
         self._show()
@@ -88,6 +89,8 @@ class Thinking(SelectableMarkdown):
     def _spin(self) -> None:
         self._frame += 1
         self._update_title()
+        if self.has_class("sending"):
+            self._show()
 
     def _update_title(self) -> None:
         if self._word == "razonado":
@@ -98,7 +101,11 @@ class Thinking(SelectableMarkdown):
         self.border_title = f"{prefix} {self._word} {suffix}"
 
     def _show(self) -> None:
-        self.update("" if self.collapsed else self._text)
+        if self.has_class("sending"):
+            prefix = self.SPIN_FRAMES[self._frame % len(self.SPIN_FRAMES)]
+            self.update(f"{prefix} {self._word}")
+        else:
+            self.update("" if self.collapsed else self._text)
 
     def _on_click(self, event: events.Click) -> None:
         if (
@@ -314,6 +321,12 @@ class HarnessApp(App):
         text-style: italic;
         border-title-color: $primary;
         border-title-style: bold;
+    }
+
+    .sending {
+        border: none;
+        color: $primary;
+        text-style: bold;
     }
 
     #prompt {
