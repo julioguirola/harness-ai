@@ -722,15 +722,21 @@ class HarnessApp(App):
         self._cancel_event = cancel_event
         reasoning_text = ""
         answer_text = ""
+        answer_written = 0
         last_flush = 0.0
 
         def flush(force: bool = False) -> None:
-            nonlocal last_flush
+            nonlocal last_flush, answer_written
             now = monotonic()
-            if force or now - last_flush >= 0.15:
+            if force or now - last_flush >= 0.25:
                 last_flush = now
                 self.call_from_thread(reasoning.set_text, reasoning_text)
-                self.call_from_thread(answer.update, answer_text)
+                # Renderizado incremental: solo el fragmento nuevo, sin re-parsear
+                # todo el documento Markdown en cada flush.
+                delta = answer_text[answer_written:]
+                if delta:
+                    answer_written = len(answer_text)
+                    self.call_from_thread(answer.append, delta)
 
         try:
             for kind, chunk in core.stream_chat(text, cancel_event):
