@@ -1,0 +1,68 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-amd64
+            ext: ".exe"
+          - os: ubuntu-latest
+            name: linux-amd64
+            ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Build with PyInstaller
+        run: uv run pyinstaller --name harness --onefile --clean --collect-all textual --hidden-import harness.core --hidden-import harness.tui entrypoint.py
+
+      - name: Rename artifact
+        shell: bash
+        run: mv "dist/harness${{ matrix.ext }}" "dist/harness-${{ matrix.name }}${{ matrix.ext }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-${{ matrix.name }}
+          path: dist/harness-${{ matrix.name }}${{ matrix.ext }}
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: artifacts/*
+          generate_release_notes: true
