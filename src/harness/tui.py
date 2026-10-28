@@ -44,6 +44,42 @@ class SelectableStatic(Static):
     ALLOW_SELECT = True
 
 
+class ToolCall(SelectableStatic):
+    """Muestra un tool call colapsado: solo el comando; click para ver el output."""
+
+    def __init__(self, command: str) -> None:
+        self.command = command
+        self.output = ""
+        self.collapsed = True
+        text = Text()
+        text.append("⚙ ", style="bold yellow")
+        text.append(self.command, style="dim")
+        text.append("  ▸", style="dim")
+        super().__init__(text)
+
+    def set_output(self, output: str) -> None:
+        self.output = output
+        self._refresh()
+
+    def _refresh(self) -> None:
+        text = Text()
+        text.append("⚙ ", style="bold yellow")
+        text.append(self.command, style="dim")
+        if self.collapsed:
+            text.append("  ▸", style="dim")
+        else:
+            text.append("  ▾", style="dim")
+            if self.output:
+                text.append("\n")
+                text.append(self.output)
+        self.update(text)
+
+    def on_click(self, event: events.Click) -> None:
+        self.collapsed = not self.collapsed
+        self._refresh()
+        event.stop()
+
+
 class SelectableMarkdown(Markdown):
     """Markdown que permite seleccionar su texto con el ratón."""
 
@@ -724,6 +760,7 @@ class HarnessApp(App):
         answer_text = ""
         answer_written = 0
         last_flush = 0.0
+        current_tool = {"widget": None}
 
         def flush(force: bool = False) -> None:
             nonlocal last_flush, answer_written
@@ -738,14 +775,31 @@ class HarnessApp(App):
                     answer_written = len(answer_text)
                     self.call_from_thread(answer.append, delta)
 
+        def mount_tool_call(command: str) -> None:
+            chat = self.query_one("#chat", Chat)
+            widget = ToolCall(command)
+            chat.mount(widget)
+            chat.anchor(True)
+            current_tool["widget"] = widget
+
+        def set_tool_output(output: str) -> None:
+            widget = current_tool["widget"]
+            if widget is not None:
+                widget.set_output(output)
+
         try:
-            for kind, chunk in core.stream_chat(text, cancel_event):
+            for kind, chunk in core.stream_chat(text, "user", cancel_event):
                 if kind == "reasoning":
                     reasoning_text += chunk
-                else:
+                elif kind == "content":
                     if not answer_text:
                         self.call_from_thread(reasoning.stop_spinner)
                     answer_text += chunk
+                elif kind == "tool_call":
+                    self.call_from_thread(reasoning.stop_spinner)
+                    self.call_from_thread(mount_tool_call, chunk)
+                elif kind == "tool_result":
+                    self.call_from_thread(set_tool_output, chunk)
                 flush()
         except Exception as error:
             answer_text += f"\n\n**Error:** {error}"
