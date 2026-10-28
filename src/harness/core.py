@@ -131,6 +131,8 @@ def get_available_model_effort_levels() -> list[str]:
         return levels
     for type in MODEL.reasoning_options:
         if type.type == "effort":
+            if "none" not in type.values:
+                type.values.append("none")
             return type.values
         else:
             levels = ["none", "default"]
