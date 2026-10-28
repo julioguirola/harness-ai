@@ -505,11 +505,10 @@ class HarnessApp(App):
 
         chat = self.query_one("#chat", Chat)
         reasoning = Thinking()
-        answer = SelectableMarkdown("", classes="answer")
-        chat.mount(SelectableStatic(user_line(text), classes="user"), reasoning, answer)
+        chat.mount(SelectableStatic(user_line(text), classes="user"), reasoning)
         chat.anchor(True)
 
-        self._ask_model(text, reasoning, answer)
+        self._ask_model(text, reasoning)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         # Input dedicado del CommandPalette (ctrl+p): filtrar comandos.
@@ -753,27 +752,40 @@ class HarnessApp(App):
         chat.anchor(True)
 
     @work(thread=True)
-    def _ask_model(self, text: str, reasoning: Thinking, answer: Markdown) -> None:
+    def _ask_model(self, text: str, reasoning: Thinking) -> None:
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
         reasoning_text = ""
         answer_text = ""
-        answer_written = 0
+        current_answer = {"widget": None, "text": "", "written": 0}
         last_flush = 0.0
         current_tool = {"widget": None}
 
         def flush(force: bool = False) -> None:
-            nonlocal last_flush, answer_written
+            nonlocal last_flush
             now = monotonic()
             if force or now - last_flush >= 0.25:
                 last_flush = now
                 self.call_from_thread(reasoning.set_text, reasoning_text)
-                # Renderizado incremental: solo el fragmento nuevo, sin re-parsear
-                # todo el documento Markdown en cada flush.
-                delta = answer_text[answer_written:]
-                if delta:
-                    answer_written = len(answer_text)
-                    self.call_from_thread(answer.append, delta)
+                widget = current_answer["widget"]
+                if widget is not None:
+                    delta = current_answer["text"][current_answer["written"]:]
+                    if delta:
+                        current_answer["written"] = len(current_answer["text"])
+                        self.call_from_thread(widget.append, delta)
+
+        def ensure_answer_widget() -> None:
+            if current_answer["widget"] is not None:
+                return
+            chat = self.query_one("#chat", Chat)
+
+            def mount() -> None:
+                w = SelectableMarkdown("", classes="answer")
+                chat.mount(w)
+                chat.anchor(True)
+                current_answer["widget"] = w
+
+            self.call_from_thread(mount)
 
         def mount_tool_call(command: str) -> None:
             chat = self.query_one("#chat", Chat)
@@ -781,6 +793,10 @@ class HarnessApp(App):
             chat.mount(widget)
             chat.anchor(True)
             current_tool["widget"] = widget
+            # La respuesta final debe ir después de los tools.
+            current_answer["widget"] = None
+            current_answer["text"] = ""
+            current_answer["written"] = 0
 
         def set_tool_output(output: str) -> None:
             widget = current_tool["widget"]
@@ -792,17 +808,20 @@ class HarnessApp(App):
                 if kind == "reasoning":
                     reasoning_text += chunk
                 elif kind == "content":
-                    if not answer_text:
+                    if current_answer["widget"] is None and not current_answer["text"]:
                         self.call_from_thread(reasoning.stop_spinner)
+                    ensure_answer_widget()
+                    current_answer["text"] += chunk
                     answer_text += chunk
                 elif kind == "tool_call":
-                    self.call_from_thread(reasoning.stop_spinner)
                     self.call_from_thread(mount_tool_call, chunk)
                 elif kind == "tool_result":
                     self.call_from_thread(set_tool_output, chunk)
                 flush()
         except Exception as error:
             answer_text += f"\n\n**Error:** {error}"
+            if current_answer["widget"] is not None:
+                current_answer["text"] += f"\n\n**Error:** {error}"
         finally:
             flush(force=True)
             self.call_from_thread(self._finish_stream, reasoning)
