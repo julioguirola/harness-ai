@@ -161,6 +161,25 @@ class Thinking(SelectableMarkdown):
         event.stop()
 
 
+# Evita el crash de Textual al hacer click sobre el texto del spinner de
+# "enviando": los párrafos del Markdown se reconstruyen cada 0.1s y en ese
+# estado su contenedor puede ser None. Desactivamos la selección solo para
+# los párrafos hijos de un Thinking mientras está enviando.
+from textual.widgets._markdown import MarkdownParagraph as _MarkdownParagraph
+
+
+def _thinking_paragraph_allow_select(self) -> bool:
+    parent = self.parent
+    if parent is None:
+        return False
+    if isinstance(parent, Thinking) and parent.has_class("sending"):
+        return False
+    return True
+
+
+_MarkdownParagraph.allow_select = property(_thinking_paragraph_allow_select)
+
+
 THEME = Theme(
     name="harness-blue",
     primary=BLUE,

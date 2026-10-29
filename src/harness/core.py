@@ -55,15 +55,17 @@ def cancel_active_stream() -> None:
 
 def fetch_provider(provider: str):
     global MODELS
-    with open("models.json", "r", encoding="utf-8") as file:
-        try:
-            cached = Provider.model_validate_json(file.read())
-            if len(cached.models) > 0:
-                MODELS = cached.models
-                return
-        except:
-            pass
-
+    try:
+        with open("models.json", "r", encoding="utf-8") as file:
+            try:
+                cached = Provider.model_validate_json(file.read())
+                if len(cached.models) > 0:
+                    MODELS = cached.models
+                    return
+            except:
+                pass
+    except:
+        pass
     res = requests.get("https://models.dev/api.json")
     provider_fetched = Provider.model_validate(res.json()[provider])
     MODELS = {
