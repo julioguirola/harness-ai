@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import subprocess
 import threading
 from collections.abc import Iterator
@@ -172,7 +173,21 @@ def get_current_effort_level() -> str:
     return EFFORT.get("reasoning_effort", "default")
 
 
-conversation: list[dict[str, str]] = []
+def _build_system_prompt() -> str:
+    return (
+        "Eres un agente de terminal cuya única herramienta es ejecutar comandos. "
+        "Debes generar comandos válidos para el sistema operativo en el que trabajas. "
+        f"Sistema operativo: {platform.system()} {platform.release()} "
+        f"({platform.version()}), arquitectura: {platform.machine()}. "
+        "Los comandos se ejecutan con subprocess.run como lista de strings (sin shell), "
+        "por lo que no uses sintaxis de shell (pipes, redirecciones, &&) a menos que "
+        "invoques explícitamente un shell."
+    )
+
+
+conversation: list[dict[str, str]] = [
+    {"role": "system", "content": _build_system_prompt()}
+]
 
 
 def stream_chat(
@@ -182,6 +197,8 @@ def stream_chat(
 ) -> Iterator[tuple[str, str]]:
     global _active_completion
     print(f"Llamando al modelo {MODEL.id} con context={MODEL.limit.context}")
+    if not conversation or conversation[0].get("role") != "system":
+        conversation.insert(0, {"role": "system", "content": _build_system_prompt()})
     conversation.append({"role": rol, "content": content})
 
     while True:
@@ -279,9 +296,11 @@ def stream_chat(
                     comando = args.get("comando", [])
                     yield (
                         "tool_call",
-                        " ".join(comando)
-                        if isinstance(comando, list)
-                        else str(comando),
+                        (
+                            " ".join(comando)
+                            if isinstance(comando, list)
+                            else str(comando)
+                        ),
                     )
                     resultado = tool_exec_command(comando)
                     yield "tool_result", resultado
